@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<!-- rename: 名前の変更で、バケットに何が起きるか（記事「仕組み」の「名前の変更と競合」の図 6a、README 手順 7-3 の冒頭）。
+     ファイルシステムで 20 個のファイルを含むディレクトリ drafts/ の名前を drafts-old/ に 1 回変えると、
+     バケットでは drafts-old/ に 20 個のオブジェクトが書き込まれ、drafts/ の 20 個のオブジェクトが削除される見込み。
+     根拠:
+     - s3files-078: 名前の変更と移動はオブジェクトの書き直しになり、遅く、費用もかかる（Agent Skill）
+     - D-1: 汎用バケットには名前を変える API が無い（RenameObject はディレクトリバケットだけ。botocore s3/2006-03-01 の RenameObject）
+     - 「20 個を書き込み、20 個を削除」は Agent Skill の「書き直し」からの読み取りで、README の手順 7-3 で確かめる（記事も「見込んでいます」と書く）。
+       数は手順 7-3 の例（draft-01.txt〜draft-20.txt、mv /mnt/s3files/drafts /mnt/s3files/drafts-old）
+     - バージョニング: setup.sh がバケットのバージョニングを有効にする。削除すると削除マーカーが付く（一般的な S3 の知識、README 手順 7-3）
+     予算: 左の枠 x 0〜300、間 x 300〜400（矢印とラベル「書き出し」）、右の枠 x 400〜776。枠と中身の間は 24px 以上。
+     差し色は下の 1 行だけ。枠の見出しのアイコンは overview と同じ塗りの四角（#7aa116）に白のアイコンを入れ、枠の角に置く -->
+<link rel="stylesheet" href="diagram.css">
+<link rel="stylesheet" href="deepcuts.css">
+<script src="wires.js"></script>
+<style>
+  #fig { width: 800px; height: 378px; }
+  .grp { position: absolute; border: 2px solid var(--ink); }
+  .grp > .gl { position: absolute; left: -2px; top: -2px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .grp > .gl .sq { width: 32px; height: 32px; background: #7aa116; display: flex; align-items: center; justify-content: center; }
+  .grp > .gl .sq img { width: 28px; height: 28px; filter: brightness(0) invert(1); }
+  .grp > .gl .ja { font-size: 17px; font-weight: 900; }
+  .t1 { position: absolute; display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 900; white-space: nowrap; }
+  .t1 img { width: 40px; height: 40px; }
+  .t1 code, .tx code, .bx code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .tx { position: absolute; font-size: 16px; font-weight: 500; line-height: 22px; white-space: nowrap; }
+  .tx.c { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .bx { position: absolute; left: 424px; width: 328px; border: 2px solid var(--ink); background: #fff; padding: 8px 12px; }
+  .bx b { display: block; font-size: 17px; font-weight: 900; line-height: 24px; }
+  .bx span { display: block; margin-top: 4px; font-size: 16px; font-weight: 500; line-height: 22px; color: #4a4843; }
+  .lbl.ink { color: var(--ink); font-size: 16px; line-height: 22px; padding: 0; }
+  .hotline { position: absolute; left: 0; font-size: 18px; font-weight: 900; color: var(--hot); line-height: 26px; white-space: nowrap; }
+  .foot { position: absolute; left: 0; font-size: 16px; font-weight: 500; color: #4a4843; line-height: 22px; white-space: nowrap; }
+</style>
+</head><body>
+<div id="fig">
+  <svg id="wires"></svg>
+
+  <div class="grp" style="left:0;top:0;width:300px;height:286px"><div class="gl"><span class="sq"><img src="../icons/AmazonElasticFileSystemFileSystem.svg"></span><span class="ja">ファイルシステム</span></div></div>
+  <div class="t1" style="left:24px;top:56px"><img src="../icons/Folder.svg"><span>1 回の <code>mv</code></span></div>
+  <div class="tx c" style="left:24px;top:116px">drafts/ → drafts-old/</div>
+  <div class="tx" style="left:24px;top:154px">中のファイル 20 個<br><code>draft-01.txt</code>〜<code>draft-20.txt</code></div>
+
+  <div class="lbl ink" style="left:318px;top:106px">書き出し</div>
+
+  <div class="grp" style="left:400px;top:0;width:376px;height:286px"><div class="gl"><span class="sq"><img src="../icons/AmazonSimpleStorageServiceBucket.svg"></span><span class="ja">バケット</span></div></div>
+  <div class="bx" style="top:56px"><b><code>drafts-old/</code> に 20 個の<br>オブジェクトを書き込む</b></div>
+  <div class="bx" style="top:144px"><b><code>drafts/</code> の 20 個の<br>オブジェクトを削除する</b><span>バージョニングを有効にした<br>バケットでは削除マーカーが付く</span></div>
+
+  <div class="hotline" style="top:310px">1 回の名前の変更が、ファイルの数だけのオブジェクトの書き直しになる</div>
+  <div class="foot" style="top:354px">Agent Skill の記述と手順 7-3 の例からの見込み。S3 での表れ方は手順 7-3 で確かめる</div>
+</div>
+<script>
+function poly(pts, o = {}) {
+  const svg = document.getElementById('wires');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', pts.map((q) => q.join(',')).join(' '));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', '#0c0c0c'); p.setAttribute('stroke-width', '2.5');
+  p.setAttribute('marker-end', 'url(#ak)');
+  svg.appendChild(p);
+}
+window.addEventListener('load', async () => { await document.fonts.ready;
+  poly([[304, 136], [396, 136]]);
+  document.body.dataset.ready = '1';
+});
+</script>
+</body></html>

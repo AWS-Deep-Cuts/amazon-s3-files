@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<!-- overview: S3 Files の全体像（記事「仕組み」の章の冒頭の図 2）。記事は、この図の上から順に語を導入する。
+     上から: Amazon S3 の枠の汎用バケット（正本）と、S3 の API を使うプログラム → 書き出しと取り込みの 2 本の矢印
+     → Amazon S3 Files の枠のファイルシステムと、その中の高性能ストレージ → VPC の枠のマウントターゲット → クライアント（EC2・ECS のタスク・Lambda 関数）。
+     右側の点線は、大きなオブジェクトをクライアントがバケットから直接読む経路（直接読み取り）。
+     根拠:
+     - s3files-003: S3 Files は汎用バケット（またはプレフィックス）を共有ファイルシステムとして NFS v4.1 / v4.2 でマウントできるようにする。バケットが正本（system of record）
+     - s3files-048・053: CreateMountTarget はサブネットを指定し、AZ ごとに作成する。S3 Files が管理するネットワークインターフェイスがサブネットに作成される
+     - s3files-058: 取り込みの規則と期限切れの規則（PutSynchronizationConfiguration）。記事は「取り込みがいつ行われるかは同期の設定で決まる」と書く
+     - s3files-065・080: 小さくよく使うファイルは高性能ストレージから返し、大きな読み取りはクライアントが S3 から直接読む（Agent Skill、amazon-efs-utils の説明書）
+     - s3files-073: 書き出しは最後の書き込みから約 60 秒後（AWS のサンプル）。そのため脚注で出典を書く
+     - s3files-099・116〜124: マウントは NFS で、TLS と IAM 認証は常に有効。EC2・ECS・EKS・Lambda・AWS Batch・Amazon Bedrock AgentCore から使える
+     表記: 高性能ストレージの説明は記事の「取り込んだデータと書き込まれたデータが保存されます」と同じ言い方。アクセスポイントは記事でこの図より後に定義するため描かない。
+     サブネットの枠は描かず、マウントターゲットの補足「AZ ごとにサブネットに作成される」で示す。
+     予算: Amazon S3 の枠 x 160〜520・y 0〜168、Amazon S3 Files の枠 x 100〜580・y 248〜500（枠の名前の札が書き出しの矢印 x 316 にかからないよう、左へ広げた）、VPC の枠 x 100〜720・y 572〜1064。
+     クライアントの枠 x 124〜556。中心の線 x 340。点線の通り道 x 776（VPC の枠から 56px、点線の左のラベルから 20px）。各枠と中身の間は 24px 以上 -->
+<link rel="stylesheet" href="diagram.css">
+<link rel="stylesheet" href="deepcuts.css">
+<script src="wires.js"></script>
+<style>
+  #fig { width: 800px; height: 1112px; }
+  .grp { position: absolute; border: 2px solid #242f3e; }
+  .grp.svc { border-color: var(--ink); }
+  .grp > .gl { position: absolute; left: -2px; top: -2px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .grp > .gl img { width: 32px; height: 32px; }
+  .grp > .gl .en { font-family: var(--font-mono); font-weight: 800; font-size: 16px; letter-spacing: .04em; }
+  .lane > .lt { white-space: nowrap; }
+  .node .s { color: #4a4843; }
+  .chipj { position: absolute; font-size: 16px; font-weight: 900; line-height: 24px; padding: 0 10px; background: var(--hot); color: #fff; }
+  .fsb { position: absolute; border: 3px solid var(--ink); background: #fff; }
+  .fsb > img { position: absolute; left: 14px; top: 14px; width: 40px; height: 40px; }
+  .fsb > b { position: absolute; left: 66px; top: 22px; font-size: 18px; font-weight: 900; line-height: 24px; }
+  .hp { position: absolute; left: 14px; right: 14px; top: 70px; bottom: 14px; border: 2px solid var(--ink); background: var(--bone); padding: 8px 12px; }
+  .hp b { display: block; font-size: 17px; font-weight: 900; line-height: 24px; }
+  .hp span { display: block; font-size: 16px; font-weight: 500; line-height: 22px; }
+  .lbl.ink { color: var(--ink); font-size: 16px; line-height: 22px; padding: 0; white-space: nowrap; }
+  .lbl.hot { color: var(--hot); font-weight: 900; }
+  .lbl.r { text-align: right; }
+  .cnote { position: absolute; font-size: 16px; font-weight: 500; line-height: 22px; text-align: center; white-space: nowrap; }
+  .foot { position: absolute; left: 0; font-size: 16px; font-weight: 500; color: #4a4843; line-height: 22px; white-space: nowrap; }
+  .pt { position: absolute; width: 0; height: 0; }
+</style>
+</head><body>
+<div id="fig">
+  <svg id="wires"></svg>
+
+  <!-- 段 1: S3 の API を使うプログラムと、Amazon S3 の汎用バケット（正本） -->
+  <div class="node" id="app" style="left:0;top:56px;width:130px"><img src="../icons/GenericApplication.svg"><div class="t">S3 の API を<br>使うプログラム</div><div class="s">同じバケットを<br>読み書きする</div></div>
+  <div class="grp svc" style="left:160px;top:0;width:360px;height:168px"><div class="gl"><img src="../icons/AmazonSimpleStorageService.svg"><span class="en">Amazon S3</span></div></div>
+  <div class="node" id="bkt" style="left:270px;top:56px;width:140px"><img src="../icons/AmazonSimpleStorageServiceBucketWithObjects.svg"><div class="t">汎用バケット</div></div>
+  <div class="chipj" style="left:410px;top:60px">正本</div>
+
+  <!-- 書き出しと取り込み。ラベルは 2 つの枠の線から 18px 離す -->
+  <div class="lbl ink hot r" style="left:200px;top:186px;width:108px">書き出し<br>約 60 秒後 ※</div>
+  <div class="lbl ink" style="left:372px;top:186px">取り込み<br>同期の設定に従う</div>
+
+  <!-- 段 2: Amazon S3 Files の枠。ファイルシステムの中に高性能ストレージ -->
+  <div class="grp svc" style="left:100px;top:248px;width:480px;height:252px"><div class="gl"><img src="../icons/AmazonSimpleStorageService.svg"><span class="en">Amazon S3 Files</span></div></div>
+  <div class="fsb" id="fs" data-self="1" style="left:184px;top:304px;width:312px;height:172px">
+    <img src="../icons/AmazonElasticFileSystemFileSystem.svg"><b>ファイルシステム</b>
+    <div class="hp"><b>高性能ストレージ</b><span>取り込んだデータと<br>書き込まれたデータを保存する</span></div>
+  </div>
+  <div class="lbl ink" style="left:596px;top:360px">大きなオブジェクトは<br>S3 から直接読む</div>
+
+  <!-- 段 3: VPC の枠。マウントターゲットとクライアント -->
+  <div class="grp" style="left:100px;top:572px;width:620px;height:492px"><div class="gl"><img src="../icons/VirtualprivatecloudVPC.svg"><span class="en">VPC</span></div></div>
+  <div class="node" id="mt" style="left:200px;top:628px;width:280px"><img src="../icons/AmazonVPCElasticNetworkInterface.svg"><div class="t">マウントターゲット</div><div class="s">AZ ごとにサブネットに作成される</div></div>
+  <div class="lbl ink" style="left:352px;top:750px">NFS で接続<br>TLS と IAM 認証</div>
+  <div class="lane" style="left:124px;top:806px;width:432px;height:234px"><span class="lt">クライアント</span></div>
+  <div class="node" style="left:154px;top:866px;width:112px"><img src="../icons/AmazonEC2.svg"><div class="t">EC2</div></div>
+  <div class="node" style="left:284px;top:866px;width:112px"><img src="../icons/AmazonElasticContainerService.svg"><div class="t">ECS のタスク</div></div>
+  <div class="node" style="left:414px;top:866px;width:112px"><img src="../icons/AWSLambda.svg"><div class="t">Lambda 関数</div></div>
+  <div class="cnote" style="left:148px;top:970px;width:384px">このほか EKS・AWS Batch・<br>Amazon Bedrock AgentCore からも使える</div>
+
+  <div class="foot" style="top:1088px">※ 書き出しの時間は、AWS のサンプルの記述</div>
+
+  <!-- 線の端点 -->
+  <div class="pt" id="ex1" data-self="1" style="left:316px;top:300px"></div>
+  <div class="pt" id="ex2" data-self="1" style="left:316px;top:145px"></div>
+  <div class="pt" id="im1" data-self="1" style="left:364px;top:145px"></div>
+  <div class="pt" id="im2" data-self="1" style="left:364px;top:300px"></div>
+  <div class="pt" id="mt1" data-self="1" style="left:340px;top:624px"></div>
+  <div class="pt" id="mt2" data-self="1" style="left:340px;top:480px"></div>
+  <div class="pt" id="cl1" data-self="1" style="left:340px;top:802px"></div>
+  <div class="pt" id="cl2" data-self="1" style="left:340px;top:738px"></div>
+</div>
+<script>
+// 水平と垂直の線だけで折れ線を引く（wires.js と同じ線の太さと矢印）
+function poly(pts, o = {}) {
+  const svg = document.getElementById('wires');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', pts.map((q) => q.join(',')).join(' '));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', o.hot ? '#ff4d00' : '#0c0c0c'); p.setAttribute('stroke-width', '2.5');
+  if (o.dash) p.setAttribute('stroke-dasharray', '6 5');
+  if (!o.noarrow) p.setAttribute('marker-end', o.hot ? 'url(#ah)' : 'url(#ak)');
+  if (o.both) p.setAttribute('marker-start', o.hot ? 'url(#ahs)' : 'url(#aks)');
+  svg.appendChild(p);
+}
+window.addEventListener('load', async () => { await document.fonts.ready;
+  wire('#app', '#bkt', {both: true});
+  poly([[316, 300], [316, 145]], {hot: true});
+  poly([[364, 145], [364, 300]]);
+  poly([[340, 624], [340, 480]]);
+  poly([[340, 802], [340, 738]]);
+  // 直接読み取り: クライアントの枠の右端から右へ、x=776 を上へ、バケットの右へ
+  poly([[560, 894], [776, 894], [776, 104], [372, 104]], {dash: true});
+  document.body.dataset.ready = '1';
+});
+</script>
+</body></html>

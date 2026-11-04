@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<!-- architecture: ハンズオンの構成図（README「構築するアーキテクチャ」・記事「ハンズオンはこちら！」の図 8）。
+     上段: あなたが操作する 2 つの画面（ブラウザの Session Manager で開く EC2 のシェルと、AWS CloudShell）。
+     下: AWS Cloud ＞ 東京リージョン ＞ S3 バケット・Amazon S3 Files（ファイルシステム）・既定の VPC ＞ サブネット（EC2 インスタンス・マウントターゲット）・CloudWatch。
+     IAM はグローバルなサービスのため、2 つのロールはリージョンの枠の外、AWS Cloud の枠の中に描く。
+     札「手順 N」は README の手順の番号（記事と README の「図の箱の右上の『手順 2』などの札は、ハンズオンの手順の番号です」）:
+     - S3 バケット: 手順 2（aws s3 cp で sales/2026-10.csv をアップロード）・7（同期の計測）・8（git の .git を aws s3 ls / sync で確かめる）
+     - ファイルシステム: 手順 3（CreateFileSystem）・4（Get/PutSynchronizationConfiguration）
+     - マウントターゲット: 手順 5（CreateMountTarget）
+     - EC2 インスタンス: 手順 6（マウント）・7（計測）・8（git と SQLite）
+     根拠:
+     - hands-on/setup.sh: S3 バケット（バージョニング有効）、同期用ロール、EC2 用ロールとインスタンスプロファイル、セキュリティグループ 2 つ、
+       EC2 インスタンス t3.micro（Amazon Linux 2023、既定の VPC のサブネット、4 時間で自動終了）を作成する（README 手順 1-1 の表）
+     - s3files-048・050・053: マウントターゲットは 1 つの AZ のサブネットに作成し、クライアントは NFS（TCP 2049）で接続する。TLS は常に有効（s3files-099）
+     - s3files-097: EC2 に amazon-efs-utils v3.0.0 以降を入れる（README 手順 6-2）
+     - s3files-089: 同期用ロールは S3 Files が引き受ける（AWS のサンプルの信頼ポリシーのプリンシパルは elasticfilesystem.amazonaws.com）
+     - s3files-108・D-3・D-7・D-8: マウントヘルパーとプロキシはロググループ /aws/efs/utils にログを送り、プロキシはメトリクスを 2 つの名前空間に送る
+     - EC2 用ロールは、EC2 の中のマウントヘルパー・プロキシと Session Manager が使う（README 手順 1-1 の表）
+     配置: 枠の名前の札（左上）を線が横切らないように、Session Manager の線を x 216、CloudShell の線を x 280（バケットへ）と
+     x 536（Amazon S3 Files の枠の札のアイコンへ）に通す。3 本とも交わらない。手順の札は箱の右上の内側に付け、線の入口と 18px 以上離す。
+     各枠（AWS Cloud・リージョン・既定の VPC・サブネット・Amazon S3 Files・上段の点線の枠）と中身の間は 24px 以上 -->
+<link rel="stylesheet" href="diagram.css">
+<link rel="stylesheet" href="deepcuts.css">
+<script src="wires.js"></script>
+<style>
+  #fig { width: 800px; height: 1196px; }
+  .lane > .lt { white-space: nowrap; }
+  .grp { position: absolute; border: 2px solid #242f3e; }
+  .grp.region { border: 2px dashed #00a4a6; }
+  .grp.vpc { border-color: #8c4fff; }
+  .grp.sub { border: 2px dashed #7aa116; }
+  .grp.svc { border-color: var(--ink); }
+  .grp > .gl { position: absolute; left: -2px; top: -2px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .grp > .gl img { width: 32px; height: 32px; }
+  .grp > .gl .en { font-family: var(--font-mono); font-weight: 800; font-size: 16px; letter-spacing: .04em; }
+  .grp > .gl .ja { font-size: 16px; font-weight: 900; }
+  .scr { position: absolute; border: 2px solid var(--ink); background: #fff; padding: 12px 14px; }
+  .scr .hd { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 900; white-space: nowrap; }
+  .scr .hd img { width: 36px; height: 36px; }
+  .scr span { display: block; margin-top: 6px; font-size: 16px; font-weight: 500; line-height: 22px; white-space: nowrap; }
+  .scr code, .rb code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .rb { position: absolute; border: 2px solid var(--ink); background: #fff; padding: 14px 14px; }
+  .rb > img { display: block; width: 40px; height: 40px; }
+  .rb > b { display: block; margin-top: 8px; font-size: 17px; font-weight: 900; line-height: 24px; white-space: nowrap; }
+  .rb > span { display: block; font-size: 16px; font-weight: 500; line-height: 22px; color: #4a4843; white-space: nowrap; }
+  .rb > span code { color: var(--ink); }
+  .rb.row { display: grid; grid-template-columns: 40px auto; column-gap: 12px; align-items: start; }
+  .rb.row > b { margin-top: 0; }
+  .rb.row > span { grid-column: 2; }
+  .tg { position: absolute; font-style: normal; right: 8px; top: 8px; font-size: 16px; font-weight: 900; line-height: 24px; padding: 0 8px; background: var(--ink); color: #fff; white-space: nowrap; }
+  .lbl.ink { color: var(--ink); font-size: 16px; line-height: 22px; padding: 0; }
+  .role { position: absolute; display: grid; grid-template-columns: 40px auto; column-gap: 10px; }
+  .role img { width: 40px; height: 40px; grid-row: span 2; }
+  .role b { font-size: 17px; font-weight: 900; line-height: 24px; }
+  .role span { font-size: 16px; font-weight: 500; line-height: 22px; color: #4a4843; white-space: nowrap; }
+  .pt { position: absolute; width: 0; height: 0; }
+</style>
+</head><body>
+<div id="fig">
+  <svg id="wires"></svg>
+
+  <!-- 上段: あなたが操作する画面 -->
+  <div class="lane" style="left:0;top:0;width:800px;height:226px"><span class="lt">あなたが操作する画面</span></div>
+  <div class="scr" style="left:24px;top:60px;width:208px;height:142px">
+    <div class="hd"><img src="../icons/AWSSystemsManagerSessionManager.svg">Session Manager</div>
+    <span>EC2 のシェル<br><code>mount</code>・<code>python3</code>・<br><code>git</code>・<code>sqlite3</code></span>
+  </div>
+  <div class="scr" style="left:256px;top:60px;width:520px;height:142px">
+    <div class="hd"><img src="../icons/AWSCloudShell.svg">AWS CloudShell</div>
+    <span>AWS CLI のコマンドを実行する<br><code>aws s3files</code>・<code>aws s3</code>・<code>aws s3api</code></span>
+  </div>
+
+  <!-- AWS Cloud ＞ 東京リージョン -->
+  <div class="grp" style="left:0;top:262px;width:800px;height:934px"><div class="gl"><img src="../icons/AWSCloudlogo.svg"><span class="en">AWS Cloud</span></div></div>
+  <div class="grp region" style="left:24px;top:318px;width:752px;height:757px"><div class="gl"><img src="../icons/Region.svg"><span class="ja">東京リージョン</span></div></div>
+
+  <!-- 段 A: S3 バケットと Amazon S3 Files -->
+  <div class="rb" id="bk" data-self="1" style="left:240px;top:430px;width:180px;height:125px">
+    <img src="../icons/AmazonSimpleStorageServiceBucket.svg"><b>S3 バケット</b><span>バージョニング有効</span><i class="tg">手順 2・7・8</i>
+  </div>
+  <div class="lbl ink" style="left:436px;top:446px">取り込み</div>
+  <div class="lbl ink" style="left:436px;top:494px">書き出し</div>
+  <div class="grp svc" style="left:520px;top:374px;width:232px;height:205px"><div class="gl"><img src="../icons/AmazonSimpleStorageService.svg"><span class="en">Amazon S3 Files</span></div></div>
+  <div class="rb" id="fs" data-self="1" style="left:544px;top:430px;width:184px;height:125px">
+    <img src="../icons/AmazonElasticFileSystemFileSystem.svg"><b>ファイルシステム</b><span>同期の設定</span><i class="tg">手順 3・4</i>
+  </div>
+
+  <!-- 段 B: 既定の VPC ＞ サブネット -->
+  <div class="grp vpc" style="left:48px;top:619px;width:704px;height:285px"><div class="gl"><img src="../icons/VirtualprivatecloudVPC.svg"><span class="ja">既定の VPC</span></div></div>
+  <div class="grp sub" style="left:72px;top:675px;width:656px;height:205px"><div class="gl"><img src="../icons/Publicsubnet.svg"><span class="ja">サブネット</span></div></div>
+  <div class="rb" id="ec2" data-self="1" style="left:150px;top:731px;width:180px;height:125px">
+    <img src="../icons/AmazonEC2Instance.svg"><b>EC2 t3.micro</b><span><code>amazon-efs-utils</code></span><i class="tg">手順 6〜8</i>
+  </div>
+  <div class="lbl ink" style="left:346px;top:741px">NFS・TLS<br>TCP 2049</div>
+  <div class="rb" id="mt" data-self="1" style="left:512px;top:731px;width:192px;height:125px">
+    <img src="../icons/AmazonVPCElasticNetworkInterface.svg"><b>マウントターゲット</b><span>1 つの AZ に作成</span><i class="tg">手順 5</i>
+  </div>
+
+  <!-- 段 C: CloudWatch -->
+  <div class="rb row" id="cw" data-self="1" style="left:150px;top:944px;width:410px;height:107px">
+    <img src="../icons/AmazonCloudWatch.svg"><b>Amazon CloudWatch</b><span>ロググループ <code>/aws/efs/utils</code></span><span>メトリクスの 2 つの名前空間</span>
+  </div>
+
+  <!-- 最下段: IAM ロール（リージョンの外、AWS Cloud の中） -->
+  <div class="role" style="left:24px;top:1099px"><img src="../icons/AWSIdentityAccessManagementRole.svg"><b>同期用ロール</b><span>S3 Files が引き受ける</span></div>
+  <div class="role" style="left:400px;top:1099px"><img src="../icons/AWSIdentityAccessManagementRole.svg"><b>EC2 用ロール</b><span>EC2 の中のマウントヘルパーと<br>プロキシと Session Manager が使う</span></div>
+</div>
+<script>
+function poly(pts, o = {}) {
+  const svg = document.getElementById('wires');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', pts.map((q) => q.join(',')).join(' '));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', '#0c0c0c'); p.setAttribute('stroke-width', '2.5');
+  if (!o.noarrow) p.setAttribute('marker-end', 'url(#ak)');
+  svg.appendChild(p);
+}
+window.addEventListener('load', async () => { await document.fonts.ready;
+  // 上段から: Session Manager → EC2、CloudShell → バケット、CloudShell → Amazon S3 Files
+  poly([[216, 206], [216, 727]]);
+  poly([[280, 206], [280, 426]]);
+  poly([[536, 206], [536, 370]]);
+  // 取り込み（バケット → ファイルシステム）と書き出し（ファイルシステム → バケット）
+  poly([[424, 476], [540, 476]]);
+  poly([[540, 524], [424, 524]]);
+  // EC2 → マウントターゲット（NFS）、マウントターゲット → ファイルシステム
+  poly([[334, 793], [508, 793]]);
+  poly([[608, 727], [608, 559]]);
+  // EC2 → CloudWatch
+  poly([[280, 860], [280, 940]]);
+  document.body.dataset.ready = '1';
+});
+</script>
+</body></html>

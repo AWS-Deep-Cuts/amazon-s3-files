@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<!-- import-expire: 取り込みと期限切れ（記事「仕組み」の「S3 の変更がファイルシステムに届くまで」の図 5、README 手順 4 の冒頭）。
+     同期の設定（取り込みの規則と期限切れの規則）が、どのオブジェクトの何を高性能ストレージに保存し、いつ期限切れにするか。
+     根拠:
+     - s3files-066〜069: PutSynchronizationConfiguration の importDataRules（prefix・trigger・sizeLessThan。1〜10 個）と
+       expirationDataRules（daysAfterLastAccess。1〜365。ちょうど 1 個）。trigger は ON_DIRECTORY_FIRST_ACCESS と ON_FILE_ACCESS
+       （botocore s3files service-2.json の ImportDataRule・ExpirationDataRule）
+     - s3files-070: 128 KiB 未満を ON_DIRECTORY_FIRST_ACCESS で取り込み、30 日で期限切れにするのは AWS のサンプルの値。
+       この図の値は README 手順 4-2 と記事の JSON の値（sizeLessThan 131072、daysAfterLastAccess 1）
+     - s3files-067・079: メタデータは常に取り込まれる（AWS のサンプルの説明）。期限切れになってもデータは S3 に残る（AWS のサンプルの説明）
+     - s3files-080・093: 大きなオブジェクトはクライアントがバケットから直接読む。直接読み取りのしきい値と sizeLessThan の関係は確認できていない。
+       取り込まない中身が直接読まれると読めないよう、この図には直接読み取りの点線を描かない（DESIGN 9-2 の 10）
+     - s3files-127: 高性能ストレージの保存料金は東京で $0.36 / GB-月（AWS Price List、2026-11-01 取得）
+     表記: 2 つのオブジェクトと大きさは説明用の例（記事「図の値は、説明用の例です」）。期限切れは「削除」と書かない。
+     予算: バケットの枠 x 0〜288、ファイルシステムの枠 x 384〜776（y 0〜330）。取り込みの矢印 y 120、ラベルは x 304〜368。
+     カード: 取り込みの規則 x 0〜372、期限切れの規則 x 412〜776（y 378〜）。取り込みの規則のカードから取り込みの矢印の線 y 120 まで x 336 の線、
+     高性能ストレージから期限切れの規則へ x 600 の線。各枠と中身の間は 24px 以上。
+     枠の見出しのアイコンは overview と同じ塗りの四角（#7aa116）に白のアイコンを入れ、枠の角に置く -->
+<link rel="stylesheet" href="diagram.css">
+<link rel="stylesheet" href="deepcuts.css">
+<script src="wires.js"></script>
+<style>
+  #fig { width: 800px; height: 636px; }
+  .grp { position: absolute; border: 2px solid var(--ink); }
+  .grp > .gl { position: absolute; left: -2px; top: -2px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .grp > .gl .sq { width: 32px; height: 32px; background: #7aa116; display: flex; align-items: center; justify-content: center; }
+  .grp > .gl .sq img { width: 28px; height: 28px; filter: brightness(0) invert(1); }
+  .grp > .gl .ja { font-size: 17px; font-weight: 900; }
+  .obj { position: absolute; left: 24px; width: 240px; height: 44px; border: 2px solid var(--ink); background: #fff; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; }
+  .obj code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .obj span { font-size: 16px; font-weight: 700; }
+  .ex { position: absolute; font-size: 16px; font-weight: 500; color: #4a4843; line-height: 22px; }
+  .meta { position: absolute; left: 408px; width: 344px; border: 2px solid var(--ink); background: #fff; padding: 8px 12px; }
+  .meta b { display: block; font-size: 17px; font-weight: 900; line-height: 24px; }
+  .meta span { display: block; font-size: 16px; font-weight: 500; line-height: 22px; }
+  .meta code, .hp code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .hp { position: absolute; left: 408px; width: 344px; border: 3px solid var(--hot); background: #fff1ea; padding: 8px 12px; }
+  .hp > b { display: block; font-size: 17px; font-weight: 900; line-height: 24px; color: var(--hot); }
+  .hp > .r { display: block; font-size: 16px; font-weight: 700; line-height: 22px; margin-top: 4px; }
+  .hp > .r small { display: block; font-size: 16px; font-weight: 500; }
+  .hp > .r.dim { color: var(--grey); }
+  .hp > .r.dim code { color: var(--grey); }
+  .hp > .fee { display: inline-block; margin-top: 4px; font-size: 16px; font-weight: 900; line-height: 22px; padding: 0 8px; background: var(--hot); color: #fff; }
+  .card > .h { font-size: 17px; }
+  .card > pre { line-height: 22px; }
+  .card > .body { font-size: 16px; line-height: 22px; }
+  .lbl.ink { color: var(--ink); font-size: 16px; line-height: 22px; padding: 0; }
+  .foot { position: absolute; left: 0; font-size: 16px; font-weight: 500; color: #4a4843; line-height: 22px; white-space: nowrap; }
+  .foot code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+</style>
+</head><body>
+<div id="fig">
+  <svg id="wires"></svg>
+
+  <!-- 段 1: バケットとファイルシステム -->
+  <div class="grp" style="left:0;top:0;width:288px;height:330px"><div class="gl"><span class="sq"><img src="../icons/AmazonSimpleStorageServiceBucketWithObjects.svg"></span><span class="ja">バケット</span></div></div>
+  <div class="obj" style="top:80px"><code>sales/2026-11.csv</code><span>3 KB</span></div>
+  <div class="obj" style="top:140px"><code>videos/talk.mp4</code><span>2 GB</span></div>
+  <div class="ex" style="left:24px;top:204px">値は説明用の例</div>
+
+  <div class="lbl ink" style="left:304px;top:90px">取り込み</div>
+
+  <div class="grp" style="left:384px;top:0;width:392px;height:330px"><div class="gl"><span class="sq"><img src="../icons/AmazonElasticFileSystemFileSystem.svg"></span><span class="ja">ファイルシステム</span></div></div>
+  <div class="meta" style="top:56px;height:84px"><b>メタデータ：すべて取り込む</b><span>名前・大きさ・更新日時</span><span><code>sales/2026-11.csv</code>・<code>videos/talk.mp4</code></span></div>
+  <div class="hp" id="hp" data-self="1" style="top:156px;height:150px">
+    <b>高性能ストレージ</b><span class="fee">保存料金 $0.36 / GB-月</span>
+    <span class="r"><code>sales/2026-11.csv</code> の中身<small>128 KiB 未満のため取り込む</small></span>
+    <span class="r dim"><code>videos/talk.mp4</code> の中身は取り込まない</span>
+  </div>
+
+  <!-- 段 2: 同期の設定の 2 つの規則 -->
+  <div class="card" id="c1" data-self="1" style="left:0;top:378px;width:372px"><div class="h">取り込みの規則</div><pre>"prefix": ""
+"trigger": "<b>ON_DIRECTORY_FIRST_ACCESS</b>"
+"sizeLessThan": <b>131072</b></pre></div>
+  <div class="card" id="c2" data-self="1" style="left:412px;top:378px;width:364px"><div class="h">期限切れの規則</div><pre>"daysAfterLastAccess": <b>1</b></pre><div class="body">最後のアクセスから 1 日で<br>高性能ストレージの中身を期限切れにする<br>データは S3 に残る</div></div>
+
+  <div class="foot" style="top:566px">メタデータが常に取り込まれることと、期限切れの後もデータが S3 に残ることは、<br>AWS のサンプルの説明による。<br>大きなオブジェクトの直接読み取りのしきい値と <code>sizeLessThan</code> の関係は確認できていない</div>
+</div>
+<script>
+function poly(pts, o = {}) {
+  const svg = document.getElementById('wires');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', pts.map((q) => q.join(',')).join(' '));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', o.hot ? '#ff4d00' : '#0c0c0c'); p.setAttribute('stroke-width', '2.5');
+  if (o.dash) p.setAttribute('stroke-dasharray', '6 5');
+  if (!o.noarrow) p.setAttribute('marker-end', o.hot ? 'url(#ah)' : 'url(#ak)');
+  svg.appendChild(p);
+}
+window.addEventListener('load', async () => { await document.fonts.ready;
+  // 取り込み: バケットの枠 → ファイルシステムの枠
+  poly([[292, 120], [380, 120]]);
+  // 取り込みの規則が、取り込みの矢印を決める（矢印の中点へ）
+  poly([[336, 374], [336, 120]], {noarrow: true});
+  // 期限切れの規則が、高性能ストレージの中身を期限切れにする
+  poly([[600, 374], [600, 310]]);
+  document.body.dataset.ready = '1';
+});
+</script>
+</body></html>
