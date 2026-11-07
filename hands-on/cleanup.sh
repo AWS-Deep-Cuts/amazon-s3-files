@@ -138,20 +138,27 @@ else
       continue
     fi
     DELETED=""
-    # 書き出し待ちのデータ（まだバケットに書き出していない変更）が残っていると、削除は既定で失敗する。
-    # 書き出しが終わるのを待つため、30 秒おきに 10 回まで再試行する。
-    for ATTEMPT in $(seq 1 10); do
-      if aws s3files delete-file-system --region "${REGION}" --file-system-id "${FS}" >/dev/null 2>&1; then
+    # 書き出し待ちのデータ（まだバケットに書き出していない変更）が残っていると、削除は既定で失敗する
+    # （ConflictException の「has data pending export to S3」）。
+    # 2026 年 11 月の検証では、手順 8 の後に約 2 分待ってから実行しても、5 分以上この状態が続き、
+    # 再試行では削除できなかった。そのため、再試行は 30 秒おきに 4 回（約 2 分）にとどめ、早めに --force-delete に移る。
+    for ATTEMPT in $(seq 1 4); do
+      if DELETE_ERR=$(aws s3files delete-file-system --region "${REGION}" --file-system-id "${FS}" 2>&1 >/dev/null); then
         DELETED="yes"
         break
       fi
-      echo "    削除できませんでした。書き出しを待って再試行します（${ATTEMPT}/10）..."
+      if [[ "${DELETE_ERR}" == *"pending export"* ]]; then
+        echo "    書き出し待ちのデータがあるため、削除できませんでした。書き出しを待って再試行します（${ATTEMPT}/4）..."
+      else
+        echo "    削除できませんでした。再試行します（${ATTEMPT}/4）..."
+      fi
       sleep 30
     done
     if [[ -z "${DELETED}" ]]; then
-      # --force-delete は、書き出し待ちのデータを失うことがある。
+      # --force-delete は、書き出し待ちのデータ（バケットにまだ書き出していない変更）を失う。
       # このハンズオンのデータは、この後バケットごと削除するため、ここでは使う。
-      echo "  このハンズオンのデータはこの後バケットごと削除するため、--force-delete で削除します: ${FS}"
+      echo "  書き出し待ちのデータは失われますが、このハンズオンのデータはこの後バケットごと削除するため、"
+      echo "  --force-delete で削除します: ${FS}"
       if aws s3files delete-file-system --region "${REGION}" --file-system-id "${FS}" --force-delete >/dev/null 2>&1; then
         DELETED="yes"
       fi
