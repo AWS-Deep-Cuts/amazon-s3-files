@@ -10,6 +10,8 @@ export AWS_PAGER=""
 #   3. EC2 用ロールとインスタンスプロファイル … EC2 の中のプロキシ・マウントヘルパーと Session Manager が使う
 #   4. セキュリティグループ 2 つ             … クライアントの EC2 用と、マウントターゲット用（TCP 2049）
 #   5. EC2 インスタンス 1 台                 … t3.micro、Amazon Linux 2023。CPU クレジットは standard。起動から 4 時間で自動で終了する
+# EC2 は、既定の VPC の既定のサブネットに起動します。既定の VPC が無い場合は、環境変数で既存の VPC とパブリックサブネットを指定できます。
+#   DEEPCUTS_VPC_ID=<VPC の ID> DEEPCUTS_SUBNET_ID=<サブネットの ID> bash ./setup.sh
 # あわせて、ロググループ /aws/efs/utils がもとからあるかを記録します（cleanup.sh が、もとからあるロググループを消さないため）。
 
 readonly PROJECT_NAME="aws-deepcuts"
@@ -84,51 +86,117 @@ EOF
 echo "  リソース情報の保存先: ${RESOURCE_FILE}"
 echo ""
 
-# ─── [2/8] 既定の VPC とサブネット ─────────────────────────────
-echo "[2/8] 既定の VPC と、EC2 を起動するサブネットを確認..."
-VPC_ID=$(aws ec2 describe-vpcs --region "${REGION}" --filters Name=is-default,Values=true \
-  --query 'Vpcs[0].VpcId' --output text)
-if [[ -z "${VPC_ID}" || "${VPC_ID}" == "None" ]]; then
-  echo "❌ Error: ${REGION} に既定の VPC が見つかりません。" >&2
-  echo "   aws ec2 create-default-vpc --region ${REGION} で作成してから、bash ./setup.sh をやり直してください。" >&2
-  fail_before_create
+# ─── [2/8] VPC とサブネット ─────────────────────────────────────
+# 既定では、既定の VPC と、その既定のサブネットを使う。
+# 既定の VPC が無いアカウントでは、DEEPCUTS_VPC_ID と DEEPCUTS_SUBNET_ID で、既存の VPC とパブリックサブネットを指定できる。
+# どちらの場合も、VPC とサブネットは作成も削除もしない（cleanup.sh も触れない）。
+echo "[2/8] VPC と、EC2 を起動するサブネットを確認..."
+USER_VPC_ID="${DEEPCUTS_VPC_ID:-}"
+USER_SUBNET_ID="${DEEPCUTS_SUBNET_ID:-}"
+SUBNET_ID=""
+AZ_NAME=""
+if [[ -n "${USER_VPC_ID}" || -n "${USER_SUBNET_ID}" ]]; then
+  if [[ -z "${USER_VPC_ID}" || -z "${USER_SUBNET_ID}" ]]; then
+    echo "❌ Error: DEEPCUTS_VPC_ID と DEEPCUTS_SUBNET_ID は、両方を指定してください。" >&2
+    echo "   例: DEEPCUTS_VPC_ID=vpc-xxxx DEEPCUTS_SUBNET_ID=subnet-xxxx bash ./setup.sh" >&2
+    fail_before_create
+  fi
+  VPC_ID="${USER_VPC_ID}"
+  SUBNET_INFO=$(aws ec2 describe-subnets --region "${REGION}" --subnet-ids "${USER_SUBNET_ID}" \
+    --query 'Subnets[0].[VpcId, AvailabilityZone]' --output text 2>/dev/null || true)
+  SUBNET_VPC_ID=$(echo "${SUBNET_INFO}" | awk '{print $1}')
+  SUBNET_AZ=$(echo "${SUBNET_INFO}" | awk '{print $2}')
+  if [[ -z "${SUBNET_VPC_ID}" || "${SUBNET_VPC_ID}" == "None" ]]; then
+    echo "❌ Error: ${REGION} にサブネット ${USER_SUBNET_ID} が見つかりません。" >&2
+    fail_before_create
+  fi
+  if [[ "${SUBNET_VPC_ID}" != "${VPC_ID}" ]]; then
+    echo "❌ Error: サブネット ${USER_SUBNET_ID} は、VPC ${VPC_ID} ではなく ${SUBNET_VPC_ID} にあります。" >&2
+    fail_before_create
+  fi
+  # EC2 にパブリック IPv4 アドレスを付けて起動し、インターネットゲートウェイ経由で
+  # Session Manager・dnf・CloudWatch に接続するため、0.0.0.0/0 の経路がインターネットゲートウェイに向いていることを確かめる。
+  # サブネットに関連付けた経路表が無い場合は、VPC のメインの経路表が使われる。
+  RT_FILTER="Name=association.subnet-id,Values=${USER_SUBNET_ID}"
+  RT_COUNT=$(aws ec2 describe-route-tables --region "${REGION}" --filters "${RT_FILTER}" \
+    --query 'length(RouteTables)' --output text)
+  if [[ "${RT_COUNT}" == "0" ]]; then
+    RT_FILTER="Name=association.main,Values=true"
+  fi
+  # shellcheck disable=SC2016  # バッククォートは JMESPath のリテラルで、シェルでは展開しない
+  IGW_ROUTES=$(aws ec2 describe-route-tables --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" "${RT_FILTER}" \
+    --query 'length(RouteTables[0].Routes[?DestinationCidrBlock==`"0.0.0.0/0"` && starts_with(GatewayId || `""`, `"igw-"`)] || `[]`)' \
+    --output text)
+  if [[ ! "${IGW_ROUTES}" =~ ^[1-9] ]]; then
+    echo "❌ Error: サブネット ${USER_SUBNET_ID} は、パブリックサブネットではないようです。" >&2
+    echo "   経路表に、0.0.0.0/0 をインターネットゲートウェイ（igw-...）に向ける経路がありません。" >&2
+    echo "   このハンズオンは、パブリックサブネットで行います。README のトラブルシューティングを確認してください。" >&2
+    fail_before_create
+  fi
+  OFFERED=$(aws ec2 describe-instance-type-offerings --region "${REGION}" \
+    --location-type availability-zone \
+    --filters "Name=instance-type,Values=${INSTANCE_TYPE}" "Name=location,Values=${SUBNET_AZ}" \
+    --query 'length(InstanceTypeOfferings)' --output text)
+  if [[ "${OFFERED}" == "0" ]]; then
+    echo "❌ Error: サブネット ${USER_SUBNET_ID} の AZ ${SUBNET_AZ} では、${INSTANCE_TYPE} を起動できません。" >&2
+    echo "   別の AZ のサブネットを DEEPCUTS_SUBNET_ID に指定してください。" >&2
+    fail_before_create
+  fi
+  SUBNET_ID="${USER_SUBNET_ID}"
+  AZ_NAME="${SUBNET_AZ}"
+  VPC_LABEL="指定した VPC"
+else
+  VPC_ID=$(aws ec2 describe-vpcs --region "${REGION}" --filters Name=is-default,Values=true \
+    --query 'Vpcs[0].VpcId' --output text)
+  if [[ -z "${VPC_ID}" || "${VPC_ID}" == "None" ]]; then
+    echo "❌ Error: ${REGION} に既定の VPC が見つかりません。次のどちらかで、やり直してください。" >&2
+    echo "   - 既存の VPC とパブリックサブネットを指定する:" >&2
+    echo "       DEEPCUTS_VPC_ID=<VPC の ID> DEEPCUTS_SUBNET_ID=<サブネットの ID> bash ./setup.sh" >&2
+    echo "   - 既定の VPC を作成する: aws ec2 create-default-vpc --region ${REGION}" >&2
+    echo "     作成した既定の VPC は、cleanup.sh では削除されません。不要になったら、あなたが削除してください。" >&2
+    fail_before_create
+  fi
+  VPC_LABEL="既定の VPC"
 fi
 DNS_SUPPORT=$(aws ec2 describe-vpc-attribute --region "${REGION}" --vpc-id "${VPC_ID}" \
   --attribute enableDnsSupport --query 'EnableDnsSupport.Value' --output text)
 DNS_HOSTNAMES=$(aws ec2 describe-vpc-attribute --region "${REGION}" --vpc-id "${VPC_ID}" \
   --attribute enableDnsHostnames --query 'EnableDnsHostnames.Value' --output text)
 if [[ "${DNS_SUPPORT}" != "True" || "${DNS_HOSTNAMES}" != "True" ]]; then
-  echo "❌ Error: 既定の VPC ${VPC_ID} で、DNS 解決と DNS ホスト名の両方が有効になっていません。" >&2
+  echo "❌ Error: ${VPC_LABEL} ${VPC_ID} で、DNS 解決と DNS ホスト名の両方が有効になっていません。" >&2
   echo "   DNS 解決: ${DNS_SUPPORT} / DNS ホスト名: ${DNS_HOSTNAMES}" >&2
   echo "   S3 Files のマウントには、両方が有効であることが必要です。README のトラブルシューティングを確認してください。" >&2
   fail_before_create
 fi
-# t3.micro を提供している AZ のうち、既定のサブネットがある最初の AZ を選ぶ
-OFFERED_AZS=$(aws ec2 describe-instance-type-offerings --region "${REGION}" \
-  --location-type availability-zone --filters "Name=instance-type,Values=${INSTANCE_TYPE}" \
-  --query 'InstanceTypeOfferings[].Location' --output text)
-SUBNET_ID=""
-AZ_NAME=""
-for AZ in $(echo "${OFFERED_AZS}" | tr '\t' '\n' | sort); do
-  CANDIDATE=$(aws ec2 describe-subnets --region "${REGION}" \
-    --filters "Name=vpc-id,Values=${VPC_ID}" Name=default-for-az,Values=true "Name=availability-zone,Values=${AZ}" \
-    --query 'Subnets[0].SubnetId' --output text)
-  if [[ -n "${CANDIDATE}" && "${CANDIDATE}" != "None" ]]; then
-    SUBNET_ID="${CANDIDATE}"
-    AZ_NAME="${AZ}"
-    break
-  fi
-done
 if [[ -z "${SUBNET_ID}" ]]; then
-  echo "❌ Error: ${INSTANCE_TYPE} を起動できる既定のサブネットが見つかりません。" >&2
-  fail_before_create
+  # t3.micro を提供している AZ のうち、既定のサブネットがある最初の AZ を選ぶ
+  OFFERED_AZS=$(aws ec2 describe-instance-type-offerings --region "${REGION}" \
+    --location-type availability-zone --filters "Name=instance-type,Values=${INSTANCE_TYPE}" \
+    --query 'InstanceTypeOfferings[].Location' --output text)
+  for AZ in $(echo "${OFFERED_AZS}" | tr '\t' '\n' | sort); do
+    CANDIDATE=$(aws ec2 describe-subnets --region "${REGION}" \
+      --filters "Name=vpc-id,Values=${VPC_ID}" Name=default-for-az,Values=true "Name=availability-zone,Values=${AZ}" \
+      --query 'Subnets[0].SubnetId' --output text)
+    if [[ -n "${CANDIDATE}" && "${CANDIDATE}" != "None" ]]; then
+      SUBNET_ID="${CANDIDATE}"
+      AZ_NAME="${AZ}"
+      break
+    fi
+  done
+  if [[ -z "${SUBNET_ID}" ]]; then
+    echo "❌ Error: ${INSTANCE_TYPE} を起動できる既定のサブネットが見つかりません。" >&2
+    echo "   DEEPCUTS_VPC_ID と DEEPCUTS_SUBNET_ID で、VPC とパブリックサブネットを指定することもできます。" >&2
+    fail_before_create
+  fi
 fi
 {
   echo "VPC_ID=\"${VPC_ID}\""
   echo "SUBNET_ID=\"${SUBNET_ID}\""
   echo "AZ_NAME=\"${AZ_NAME}\""
 } >> "${RESOURCE_FILE}"
-echo "  VPC: ${VPC_ID} / サブネット: ${SUBNET_ID} / AZ: ${AZ_NAME}"
+echo "  VPC: ${VPC_ID}（${VPC_LABEL}）/ サブネット: ${SUBNET_ID} / AZ: ${AZ_NAME}"
+echo "  VPC とサブネットは、setup.sh も cleanup.sh も作成・削除しません"
 echo ""
 
 # ─── [3/8] S3 バケット ─────────────────────────────────────────
