@@ -269,7 +269,7 @@ for SG in "${MT_SG_ID:-}" "${CLIENT_SG_ID:-}"; do
   [[ -z "${SG}" ]] && continue
   SG_DELETED=""
   for _ in $(seq 1 20); do
-    if aws ec2 delete-security-group --region "${REGION}" --group-id "${SG}" 2>/dev/null; then
+    if aws ec2 delete-security-group --region "${REGION}" --group-id "${SG}" >/dev/null 2>&1; then
       SG_DELETED="yes"
       break
     fi
@@ -289,7 +289,7 @@ echo ""
 
 # ─── [9/9] S3 バケット ─────────────────────────────────────────
 echo "[9/9] S3 バケットのすべての版と削除マーカーを削除し、バケットを削除..."
-if [[ -n "${BUCKET_NAME}" ]] && aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" 2>/dev/null; then
+if [[ -n "${BUCKET_NAME}" ]] && aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   DELETE_FILE=$(mktemp)
   TOTAL=0
   # delete-objects は 1 回に最大 1,000 件を削除できる。1,000 件ずつ取得して削除し、空になるまで繰り返す。
@@ -355,7 +355,7 @@ for SG in "${MT_SG_ID:-}" "${CLIENT_SG_ID:-}"; do
     echo "  ⚠️  セキュリティグループが残っています: ${SG}"; LEFT=1
   fi
 done
-if [[ -n "${BUCKET_NAME}" ]] && aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" 2>/dev/null; then
+if [[ -n "${BUCKET_NAME}" ]] && aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "  ⚠️  S3 バケットが残っています: ${BUCKET_NAME}"; LEFT=1
 fi
 if [[ -n "${INSTANCE_ID}" && -n "${EFS_UTILS_LOG_GROUP_EXISTED:-}" ]]; then
