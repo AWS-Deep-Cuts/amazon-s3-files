@@ -207,7 +207,7 @@ if [[ -z "${INSTANCE_ID}" || -z "${EFS_UTILS_LOG_GROUP_EXISTED:-}" ]]; then
   echo "  EC2 を起動していないため、ロググループには触れません"
 else
   # 名前にこの EC2 のインスタンス ID を含むログストリームだけを削除する
-  # （マウントヘルパーの mount.log と、プロキシの 2 本）。
+  # （マウントヘルパーの mount.log と、プロキシの 2 本。2026 年 11 月の検証では、mount.log のログストリームは現れなかった）。
   # setup.sh の後に、同じアカウントとリージョンの別のクライアントがログを書き始めている場合もあるため、
   # 他のログストリームには触れない。
   STREAMS=$(aws logs describe-log-streams --region "${REGION}" --log-group-name "${EFS_UTILS_LOG_GROUP}" \
