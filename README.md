@@ -113,6 +113,20 @@ S3 Files では、マウントした後も、データの正しい版として�
   </details>
 
 - 東京リージョンに既定の VPC があり、既定の VPC の DNS 解決と DNS ホスト名が両方とも有効であること。S3 Files のマウントには、この 2 つの設定が必要です。`setup.sh` が確かめ、満たしていない場合は止まります。
+
+  > ⚠️ **既定の VPC が無い場合**
+  >
+  > 既定の VPC を削除したアカウントや、もとから持たないアカウントでは、`setup.sh` は [2/8] で止まります。次のどちらかを選んでください。
+  >
+  > - **既存の VPC とパブリックサブネットを指定する**：環境変数 `DEEPCUTS_VPC_ID` と `DEEPCUTS_SUBNET_ID` を両方付けて、`setup.sh` を実行します。サブネットは、0.0.0.0/0 の経路がインターネットゲートウェイに向いているパブリックサブネットにします。VPC の DNS 解決と DNS ホスト名が両方とも有効であることも必要です。`setup.sh` がこれらを確かめます。
+  >
+  >   ```bash
+  >   DEEPCUTS_VPC_ID=<VPC の ID> DEEPCUTS_SUBNET_ID=<サブネットの ID> bash ./setup.sh
+  >   ```
+  >
+  > - **既定の VPC を作成する**：`aws ec2 create-default-vpc --region ap-northeast-1` で作成してから、`setup.sh` を実行します。**作成した既定の VPC は、`cleanup.sh` では削除されません。** 不要になったら、ハンズオンの後にあなたが削除してください。
+  >
+  > どちらの場合も、`setup.sh` と `cleanup.sh` は、VPC とサブネットを作成も削除もしません。
 - CloudShell を開いた IAM ユーザーまたは IAM ロールに、S3 Files・S3・IAM・EC2・Systems Manager の操作権限と、CloudWatch・CloudWatch Logs・EventBridge の参照の権限があること。IAM の権限には、ロールとインスタンスプロファイルの作成と、ロールを AWS のサービスに渡す `iam:PassRole` が含まれます。`AdministratorAccess` 相当の権限で実施するのが簡単です。EC2 インスタンスの中のプログラムがログとメトリクスを送る権限は、あなたではなく、`setup.sh` が作成する EC2 用ロールに付けます。
 
 <details>
@@ -235,7 +249,7 @@ bash ./setup.sh
 | EC2 用ロールとインスタンスプロファイル | `aws-deepcuts-s3files-ec2-role`、`aws-deepcuts-s3files-ec2-profile` | EC2 インスタンスの中で、手順 6 でインストールするマウント用のプログラムと、Session Manager が使う。マウント、バケットの読み取り、ログとメトリクスの送信を許可する |
 | クライアントのセキュリティグループ | `aws-deepcuts-s3files-client-sg` | EC2 インスタンスに付ける。受信の規則は無い |
 | マウントターゲットのセキュリティグループ | `aws-deepcuts-s3files-mount-target-sg` | 手順 5 でマウントターゲットに付ける。TCP 2049 の受信を、クライアントのセキュリティグループからだけ許可する |
-| EC2 インスタンス | `aws-deepcuts-s3files-client` | t3.micro、Amazon Linux 2023、x86_64。既定の VPC のサブネットに、パブリック IPv4 アドレス付きで起動する。CPU クレジットの方式を、T3 の既定の `unlimited` から `standard` に変えて起動する。起動から 4 時間で自動で終了する |
+| EC2 インスタンス | `aws-deepcuts-s3files-client` | t3.micro、Amazon Linux 2023、x86_64。既定の VPC のサブネット（`DEEPCUTS_VPC_ID` と `DEEPCUTS_SUBNET_ID` を指定した場合は、そのサブネット）に、パブリック IPv4 アドレス付きで起動する。CPU クレジットの方式を、T3 の既定の `unlimited` から `standard` に変えて起動する。起動から 4 時間で自動で終了する |
 
 `setup.sh` は、2 つの IAM ロールを作成します。1 つ目の同期用ロールは、S3 Files が、ファイルシステムとバケットの間でデータを読み書きするときに引き受ける IAM ロールです。IAM ロールを引き受けるとは、AWS のサービスなどが、IAM ロールに付与された権限を一時的に使って AWS のリソースを操作することです。同期用ロールには、EventBridge のルールを管理する権限も付けます。EventBridge は、AWS のサービスで起きた変更などのイベントを、規則に従って他のサービスに届けるサービスです。同期用ロールの中身は、手順 1-2 と手順 1-3 で確かめます。
 
@@ -264,7 +278,7 @@ cat resource-ids.env
 | `ACCOUNT_ID` | AWS アカウントの ID | — |
 | `BUCKET_NAME` | S3 バケットの名前 | 2・3・7・8 |
 | `SYNC_ROLE_ARN` | 同期用ロールの ARN | 3 |
-| `VPC_ID`・`SUBNET_ID`・`AZ_NAME` | 既定の VPC の ID と、EC2 インスタンスを起動したサブネットの ID と AZ の名前 | 5 |
+| `VPC_ID`・`SUBNET_ID`・`AZ_NAME` | 既定の VPC（または指定した VPC）の ID と、EC2 インスタンスを起動したサブネットの ID と AZ の名前 | 5 |
 | `CLIENT_SG_ID`・`MT_SG_ID` | クライアントとマウントターゲットのセキュリティグループの ID | 5 |
 | `INSTANCE_ID` | EC2 インスタンスの ID | 6 |
 
@@ -1335,8 +1349,9 @@ rm -rf amazon-s3-files
 | --- | --- | --- |
 | `Invalid choice` または `Found invalid choice 's3files'` | AWS CLI が 2.34.26 より古い | [前提条件](#前提条件)の手順で、AWS CLI の最新版をインストールする |
 | `setup.sh` が `resource-ids.env が既に存在します` で止まる | 前回の環境が残っている | `bash ./cleanup.sh` を実行してから、`setup.sh` をやり直す |
-| `setup.sh` が「既定の VPC が見つかりません」で止まる | 東京リージョンに既定の VPC が無い | `aws ec2 create-default-vpc --region ap-northeast-1` で作成してから、`setup.sh` をやり直す。作成した既定の VPC は、`cleanup.sh` では削除しない |
-| `setup.sh` が「DNS 解決と DNS ホスト名の両方が有効になっていません」で止まる | 既定の VPC の DNS の設定が無効 | 既定の VPC の設定を変えるかは、あなたが判断する。Agent Skill は、`aws ec2 modify-vpc-attribute --vpc-id <VPC の ID> --enable-dns-support Value=true` と、`--enable-dns-hostnames Value=true` を付けた同じコマンドで、2 つの設定を有効にする方法を示している |
+| `setup.sh` が「既定の VPC が見つかりません」で止まる | 東京リージョンに既定の VPC が無い | 既存の VPC とパブリックサブネットを、`DEEPCUTS_VPC_ID=<VPC の ID> DEEPCUTS_SUBNET_ID=<サブネットの ID> bash ./setup.sh` で指定する。または、`aws ec2 create-default-vpc --region ap-northeast-1` で既定の VPC を作成してから、`setup.sh` をやり直す。**作成した既定の VPC は、`cleanup.sh` では削除しない**。詳しくは[前提条件](#前提条件)を参照 |
+| `setup.sh` が「パブリックサブネットではないようです」で止まる | `DEEPCUTS_SUBNET_ID` のサブネットの経路表に、0.0.0.0/0 をインターネットゲートウェイに向ける経路が無い | EC2 インスタンスは、パブリック IPv4 アドレスで Session Manager・パッケージのリポジトリ・CloudWatch に接続するため、パブリックサブネットを指定する |
+| `setup.sh` が「DNS 解決と DNS ホスト名の両方が有効になっていません」で止まる | 既定の VPC（または指定した VPC）の DNS の設定が無効 | VPC の設定を変えるかは、あなたが判断する。Agent Skill は、`aws ec2 modify-vpc-attribute --vpc-id <VPC の ID> --enable-dns-support Value=true` と、`--enable-dns-hostnames Value=true` を付けた同じコマンドで、2 つの設定を有効にする方法を示している |
 | `setup.sh` が「S3 Files の API を呼び出せませんでした」で止まる | そのリージョンで S3 Files を使えない、または権限が足りない | 権限を確かめる。別のリージョンで試す場合は、`DEEPCUTS_REGION=<リージョン> bash ./setup.sh` のように実行する |
 | `setup.sh` が `AccessDenied` などで途中で止まる | 権限が足りない | 権限を修正してから `bash ./cleanup.sh` を実行し、`bash ./setup.sh` をやり直す |
 | ファイルシステムが `creating` のまま | 同期用ロールの信頼ポリシーか権限の誤り。Agent Skill によると、作成の時点ではロールは検証されない | 手順 3-2 の `statusMessage` を表示するコマンドで、状態の説明を確かめる。`cleanup.sh` を実行して、`setup.sh` からやり直す |
