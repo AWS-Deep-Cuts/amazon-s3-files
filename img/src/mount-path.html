@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<!-- mount-path: マウントで起きること（記事「仕組み」のマウントの節の図 3、README 手順 6 の冒頭）。
+     mount -t s3files を 1 回実行すると、EC2 の中でマウントヘルパーがプロキシを起動し、カーネルの NFS クライアントにマウントを依頼する。
+     カーネルの NFS クライアントは 127.0.0.1 のプロキシに NFS v4.2 で接続し、プロキシが TLS で暗号化して IAM の認証情報を付け、マウントターゲットの TCP 2049 に送る。
+     根拠:
+     - s3files-097: マウントヘルパー mount.s3files は amazon-efs-utils の v3.0.0 以降に入っている
+     - s3files-105: マウントヘルパーは NFS の通信を中継するプロキシ（efs-proxy）を起動する。待ち受けポートは 20049〜21049（port_range_lower_bound / upper_bound）
+     - D-2: マウントヘルパーはカーネルの NFS クライアント（/sbin/mount.nfs4）に 127.0.0.1:<パス> と port=<プロキシのポート> を渡す。NFS の版の既定は 4.2
+       （efs-utils src/efs_utils_common/mount_utils.py の mount_nfs、mount_options.py の get_nfs_mount_options）
+     - D-4: プロキシのプロセス名は efs-proxy。EFS のマウントヘルパー mount.efs も同じプロキシを起動する
+     - s3files-086・095・098・099・100: TLS と IAM 認証は常に有効で外せない。EC2 ではプロキシは EC2 用ロール（インスタンスプロファイル）の認証情報を使う
+     - s3files-050・053: マウントターゲットの DNS 名 <AZ ID>.<ファイルシステムの ID>.s3files.<リージョン>.on.aws。マウントターゲットのセキュリティグループでクライアントからの TCP 2049 を許可する
+     - s3files-108・D-3・D-8: ロググループ /aws/efs/utils に、マウントヘルパーが <fs-ID> - <インスタンス ID> - mount.log の 1 本、
+       プロキシが <fs-ID>-<インスタンス ID>-efs-utils と <バケット名>-<インスタンス ID>-efs-utils の 2 本のログストリームを作成する
+     - D-7: メトリクスを送るのはプロキシ（PutMetricData）。efs-utils/S3Files に S3BucketReachable・S3BucketAccessible、efs-utils/EFS に NFSConnectionAccessible
+     表記: 記事の「あなたは EC2 の中で、root の権限で次のコマンドを実行します」「TLS と IAM 認証は常に有効で、無効にできません」に合わせる。
+     マウントヘルパーからカーネルの NFS クライアントへの依頼は、箱の左の通り道（x 64）で示し、意味はカーネルの箱の説明に書く。
+     EC2 用ロールの箱と矢印は描かない（線がカーネルの箱を貫くため）。EC2 の枠の札とプロキシの箱の説明で示す。
+     予算: Amazon S3 Files の枠 x 520〜800・y 0〜165。VPC のサブネットの枠 x 0〜800・y 205〜935。EC2 の枠 x 24〜444・y 261〜891、中の箱 x 104〜420。
+     マウントターゲットの中心 x 660。CloudWatch の箱 x 48〜776・y 959〜。各枠と中身の間は 24px 以上 -->
+<link rel="stylesheet" href="diagram.css">
+<link rel="stylesheet" href="deepcuts.css">
+<script src="wires.js"></script>
+<style>
+  #fig { width: 800px; height: 1111px; }
+  .grp { position: absolute; border: 2px solid #242f3e; }
+  .grp.svc { border-color: var(--ink); }
+  .grp.sub { border: 2px dashed #7aa116; }
+  .grp > .gl { position: absolute; left: -2px; top: -2px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .grp > .gl img { width: 32px; height: 32px; }
+  .grp > .gl .en { font-family: var(--font-mono); font-weight: 800; font-size: 16px; letter-spacing: .04em; }
+  .grp > .gl .ja { font-size: 16px; font-weight: 900; }
+  .grp > .gl .rc { font-size: 16px; font-weight: 900; line-height: 22px; padding: 0 8px; border: 2px solid var(--ink); background: #fff; margin-left: 8px; }
+  .st { padding: 8px 14px; }
+  .st > b { margin-top: 0; }
+  .st > span { white-space: nowrap; }
+  .st.you { border: 2px dashed var(--grey); }
+  .st.you code { font-size: 15px; }
+  .lbl.ink { color: var(--ink); font-size: 16px; line-height: 22px; padding: 0; }
+  .lbl code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .lbl.hot { color: var(--hot); font-weight: 900; }
+  .dns { position: absolute; text-align: center; font-family: var(--font-mono); font-weight: 800; font-size: 15px; line-height: 21px; white-space: nowrap; }
+  .dns .h { font-family: var(--font-body); font-size: 16px; font-weight: 700; color: #4a4843; }
+  .dns .t { font-family: var(--font-body); font-size: 18px; font-weight: 700; line-height: 28px; }
+  .dns .j { font-family: var(--font-body); font-size: 16px; font-weight: 700; }
+  .sg { position: absolute; font-size: 16px; font-weight: 900; line-height: 22px; text-align: center; padding: 2px 10px; border: 2px solid var(--ink); background: #fff; white-space: nowrap; }
+  .cw { position: absolute; border: 2px solid var(--ink); background: #fff; padding: 12px 16px; }
+  .cw .hd { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 900; }
+  .cw .hd img { width: 40px; height: 40px; }
+  .cw .row { display: grid; grid-template-columns: 96px auto; margin-top: 8px; font-size: 16px; font-weight: 500; line-height: 22px; }
+  .cw .row b { font-weight: 900; }
+  .cw code { font-family: var(--font-mono); font-weight: 800; font-size: 15px; }
+  .pt { position: absolute; width: 0; height: 0; }
+</style>
+</head><body>
+<div id="fig">
+  <svg id="wires"></svg>
+
+  <!-- 段 1: Amazon S3 Files の枠とファイルシステム -->
+  <div class="grp svc" style="left:520px;top:0;width:280px;height:168px"><div class="gl"><img src="../icons/AmazonSimpleStorageService.svg"><span class="en">Amazon S3 Files</span></div></div>
+  <div class="node" id="fs" style="left:580px;top:56px;width:160px"><img src="../icons/AmazonElasticFileSystemFileSystem.svg"><div class="t">ファイルシステム</div></div>
+
+  <!-- 段 2: VPC のサブネット。左に EC2 インスタンス、右にマウントターゲット -->
+  <div class="grp sub" style="left:0;top:205px;width:800px;height:730px"><div class="gl"><img src="../icons/VirtualprivatecloudVPC.svg"><span class="ja">VPC のサブネット</span></div></div>
+  <div class="grp" style="left:24px;top:261px;width:420px;height:630px"><div class="gl"><img src="../icons/AmazonEC2Instance.svg"><span class="ja">EC2 インスタンス：クライアント</span><span class="rc">EC2 用ロール</span></div></div>
+
+  <div class="st you" id="b1" data-self="1" style="left:104px;top:317px;width:316px;height:96px"><b>あなたが root で実行する</b><span><code>mount -t s3files</code><br><code>fs-…:/ /mnt/s3files</code></span></div>
+  <div class="st" id="b2" data-self="1" style="left:104px;top:445px;width:316px;height:96px"><b>マウントヘルパー</b><span><code>mount.s3files</code><br>amazon-efs-utils v3.0.0 以降</span></div>
+  <div class="lbl ink" style="left:274px;top:558px">起動する</div>
+  <div class="st hot" id="b3" data-self="1" style="left:104px;top:597px;width:316px;height:118px"><b>プロキシ</b><span><code>efs-proxy</code> が <code>127.0.0.1</code> の<br>20049〜21049 番で待ち受ける<br>EC2 用ロールの認証情報を付ける</span></div>
+  <div class="lbl ink" style="left:274px;top:733px">接続する</div>
+  <div class="st" id="b4" data-self="1" style="left:104px;top:771px;width:316px;height:96px"><b>カーネルの NFS クライアント</b><span>マウントヘルパーの依頼を受けて<br>NFS v4.2 でプロキシに接続する</span></div>
+
+  <div class="lbl ink hot" style="left:460px;top:604px">TLS と IAM 認証<br>無効にできない</div>
+
+  <div class="node" id="mt" style="left:580px;top:628px;width:160px"><img src="../icons/AmazonVPCElasticNetworkInterface.svg"></div>
+  <div class="dns" style="left:560px;top:701px;width:200px"><span class="t">マウントターゲット</span><br><span class="h">DNS 名</span><br>&lt;AZ ID&gt;.<br>&lt;<span class="j">ファイルシステムの ID</span>&gt;.<br>s3files.<br>&lt;<span class="j">リージョン</span>&gt;.on.aws</div>
+  <div class="sg" style="left:562px;top:855px;width:196px">セキュリティグループで<br>TCP 2049 の受信を許可</div>
+
+  <!-- 段 3: CloudWatch -->
+  <div class="cw" id="cw" data-self="1" style="left:48px;top:959px;width:728px;height:144px">
+    <div class="hd"><img src="../icons/AmazonCloudWatchLogs.svg"><img src="../icons/AmazonCloudWatch.svg">Amazon CloudWatch</div>
+    <div class="row"><b>ログ</b><span><code>/aws/efs/utils</code> に、マウントヘルパーが 1 本、プロキシが 2 本の<br>ログストリームを作成する</span></div>
+    <div class="row"><b>メトリクス</b><span>プロキシが <code>efs-utils/S3Files</code> に 2 つ、<code>efs-utils/EFS</code> に 1 つを送る</span></div>
+  </div>
+
+  <div class="pt" id="e1" data-self="1" style="left:360px;top:895px"></div>
+</div>
+<script>
+function poly(pts, o = {}) {
+  const svg = document.getElementById('wires');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', pts.map((q) => q.join(',')).join(' '));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', o.hot ? '#ff4d00' : '#0c0c0c'); p.setAttribute('stroke-width', '2.5');
+  if (o.dash) p.setAttribute('stroke-dasharray', '6 5');
+  if (!o.noarrow) p.setAttribute('marker-end', o.hot ? 'url(#ah)' : 'url(#ak)');
+  svg.appendChild(p);
+}
+window.addEventListener('load', async () => { await document.fonts.ready;
+  wire('#b1', '#b2', {from: 'b', to: 't'});
+  wire('#b2', '#b3', {from: 'b', to: 't'});
+  wire('#b4', '#b3', {from: 't', to: 'b'});
+  // マウントヘルパーからカーネルの NFS クライアントへの依頼（箱の左の通り道 x 64）
+  poly([[100, 493], [64, 493], [64, 819], [100, 819]]);
+  // プロキシ → マウントターゲット（TLS と IAM 認証）
+  poly([[424, 656], [628, 656]], {hot: true});
+  // マウントターゲット → ファイルシステム
+  wire('#mt', '#fs', {from: 't', to: 'b'});
+  // EC2 → CloudWatch
+  poly([[360, 895], [360, 955]]);
+  document.body.dataset.ready = '1';
+});
+</script>
+</body></html>

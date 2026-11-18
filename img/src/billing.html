@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<!-- billing: どの操作でどの料金がかかるかと、保存の単価の比較（記事「仕組み」の「料金」の図 7）。
+     ①〜④ は記事の料金の表の行と同じ: ① 高性能ストレージの保存料金、② 書き込みの料金、③ 読み取りの料金、④ 通常の S3 の料金。
+     上半分: クライアント → ファイルシステムの書き込みに ②、ファイルシステム → クライアントの読み取りに ③、高性能ストレージに ①、バケットに ④。
+     書き出しと取り込みの矢印には料金の番号を付けない（同期のための S3 のリクエストの料金を誰が負担するかは確認できていない。s3files-134、DESIGN 9-2 の 6）。
+     下半分: 保存の単価の横棒（同じ目盛り。$0.36 を 380px とした。$0.025 は 26px）。
+     根拠:
+     - s3files-126・127: S3 Files の単価は AWS Price List の AmazonS3 の価格表（ストレージクラス Files）。東京は保存 $0.36 / GB-月
+       （APN1-Files-TimedStorage-ByteHrs）、書き込み $0.07 / GB（APN1-Files-Write）、読み取り $0.04 / GB（APN1-Files-Read）
+     - s3files-129: S3 Standard の保存は最初の 50 TB が $0.025 / GB-月（APN1-TimedStorage-ByteHrs）。AmazonS3 の版は 2026-10-15
+     - D-9: AmazonEFS の東京の価格表（publicationDate 2026-09-11、2026-11-01 取得）で EFS Standard の保存は $0.36 / GB-月
+     - 14.4 倍 = 0.36 / 0.025（記事の本文と同じ）
+     - s3files-132〜134: マウントターゲットの時間料金と、同期のための S3 のリクエストの料金は確認できていない（記事の :::note warn）
+     予算: クライアント x 0〜150、ファイルシステムの箱 x 262〜498、バケット x 600〜776。棒の名前 x 0〜236、棒 x 252〜632、値は棒の右に 12px。
+     値の文字の右端と図の右端の間は 24px 以上。差し色は ① の札と ① の棒だけ -->
+<link rel="stylesheet" href="diagram.css">
+<link rel="stylesheet" href="deepcuts.css">
+<script src="wires.js"></script>
+<style>
+  #fig { width: 800px; height: 488px; }
+  .node .s { color: #4a4843; }
+  .fsb { position: absolute; border: 3px solid var(--ink); background: #fff; }
+  .fsb > .hd { position: absolute; left: 14px; top: 12px; display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 900; }
+  .fsb > .hd img { width: 40px; height: 40px; }
+  .fsb .hp { position: absolute; left: 14px; right: 14px; top: 66px; bottom: 14px; border: 2px solid var(--ink); background: var(--bone); padding: 6px 10px; }
+  .fsb .hp b { display: block; font-size: 17px; font-weight: 900; line-height: 24px; }
+  .chipj { display: inline-block; font-size: 16px; font-weight: 900; line-height: 24px; padding: 0 8px; background: var(--hot); color: #fff; margin-top: 4px; white-space: nowrap; }
+  .chipk { position: absolute; font-size: 16px; font-weight: 900; line-height: 24px; padding: 0 8px; background: var(--ink); color: #fff; white-space: nowrap; }
+  .lbl.ink { color: var(--ink); font-size: 16px; line-height: 22px; padding: 0; font-weight: 900; }
+  .rowl { font-size: 18px; }
+  .bn { position: absolute; left: 0; width: 236px; font-size: 16px; font-weight: 900; line-height: 30px; white-space: nowrap; }
+  .bn.hot { color: var(--hot); }
+  .bar { position: absolute; left: 252px; height: 30px; background: var(--grey); }
+  .bar.hot { background: var(--hot); }
+  .val { position: absolute; font-family: var(--font-mono); font-weight: 800; font-size: 16px; line-height: 30px; white-space: nowrap; }
+  .val small { font-family: var(--font-body); font-size: 16px; font-weight: 700; color: #4a4843; margin-left: 12px; }
+  .foot { position: absolute; left: 0; font-size: 16px; font-weight: 500; color: #4a4843; line-height: 22px; white-space: nowrap; }
+  .pt { position: absolute; width: 0; height: 0; }
+</style>
+</head><body>
+<div id="fig">
+  <svg id="wires"></svg>
+
+  <!-- 上半分: どの操作でどの料金がかかるか -->
+  <div class="node" id="cl" style="left:0;top:72px;width:150px"><img src="../icons/AmazonEC2Instance.svg"><div class="t">クライアント</div></div>
+  <div class="lbl ink" style="left:146px;top:54px">② 書き込み</div>
+  <div class="lbl ink" style="left:146px;top:124px">③ 読み取り</div>
+
+  <div class="fsb" style="left:262px;top:0;width:236px;height:160px">
+    <div class="hd"><img src="../icons/AmazonElasticFileSystemFileSystem.svg">ファイルシステム</div>
+    <div class="hp"><b>高性能ストレージ</b><span class="chipj">① 保存されている間</span></div>
+  </div>
+
+  <div class="lbl ink" style="left:528px;top:54px">同期</div>
+
+  <div class="node" id="bk" style="left:600px;top:72px;width:176px"><img src="../icons/AmazonSimpleStorageServiceBucket.svg"><div class="t">バケット</div></div>
+  <div class="chipk" style="left:604px;top:174px">④ 保存とリクエスト</div>
+
+  <!-- 下半分: 保存の単価の比較 -->
+  <div class="rowl" style="left:0;top:234px">保存の単価の比較</div>
+  <div class="bn hot" style="top:276px">① 高性能ストレージの保存料金</div>
+  <div class="bar hot" style="top:276px;width:380px"></div>
+  <div class="val" style="left:648px;top:276px">$0.36 / GB-月</div>
+  <div class="bn" style="top:322px">EFS Standard の保存料金</div>
+  <div class="bar" style="top:322px;width:380px"></div>
+  <div class="val" style="left:648px;top:322px">$0.36 / GB-月</div>
+  <div class="bn" style="top:368px">S3 Standard の保存料金</div>
+  <div class="bar" style="top:368px;width:26px"></div>
+  <div class="val" style="left:294px;top:368px">$0.025 / GB-月<small>① はこの 14.4 倍</small></div>
+
+  <div class="foot" style="top:418px">東京リージョン。2026 年 11 月 1 日に取得した AWS Price List の値。<br>AmazonS3 の版は 2026 年 10 月 15 日、AmazonEFS の版は 2026 年 9 月 11 日。<br>同期のための S3 のリクエストの料金と、マウントターゲットの時間料金の有無は確認できていない</div>
+</div>
+<script>
+function poly(pts, o = {}) {
+  const svg = document.getElementById('wires');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  p.setAttribute('points', pts.map((q) => q.join(',')).join(' '));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', '#0c0c0c'); p.setAttribute('stroke-width', '2.5');
+  p.setAttribute('marker-end', 'url(#ak)');
+  svg.appendChild(p);
+}
+window.addEventListener('load', async () => { await document.fonts.ready;
+  // ② 書き込み: クライアント → ファイルシステム、③ 読み取り: ファイルシステム → クライアント
+  poly([[107, 84], [258, 84]]);
+  poly([[258, 116], [107, 116]]);
+  // 同期: 書き出し（ファイルシステム → バケット）と取り込み（バケット → ファイルシステム）
+  poly([[502, 84], [656, 84]]);
+  poly([[656, 116], [502, 116]]);
+  document.body.dataset.ready = '1';
+});
+</script>
+</body></html>
