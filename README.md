@@ -1212,15 +1212,18 @@ sqlite3 sales.db "SELECT store, SUM(amount) FROM sales GROUP BY store;"
 【EC2】
 
 ```bash
-( echo "BEGIN EXCLUSIVE;"; sleep 20; echo "COMMIT;" ) | sqlite3 sales.db &
+( echo "BEGIN EXCLUSIVE;"; sleep 20; echo "COMMIT;" ) \
+  | sqlite3 sales.db &
 sleep 3
-sqlite3 sales.db "INSERT INTO sales VALUES ('2026-10-31', 'tokyo', 'test', 1);"
+sqlite3 sales.db \
+  "INSERT INTO sales VALUES ('2026-10-31', 'tokyo', 'test', 1);"
 wait
-sqlite3 sales.db "INSERT INTO sales VALUES ('2026-10-31', 'tokyo', 'test', 1);"
+sqlite3 sales.db \
+  "INSERT INTO sales VALUES ('2026-10-31', 'tokyo', 'test', 1);"
 sqlite3 sales.db "SELECT COUNT(*) FROM sales;"
 ```
 
-1 行目では、バックグラウンドで 1 つ目の `sqlite3` が排他的なトランザクションを始め、20 秒間、データベースをロックしたままにします。3 行目の 2 つ目の `sqlite3` は、その間に書き込もうとします。`wait` で 1 つ目の `sqlite3` の終了を待ってから、5 行目でもう一度書き込みます。ロックが働いていれば、3 行目は `database is locked` のエラーになり、5 行目は成功します。結果を記録してください。
+1〜2 行目では、バックグラウンドで 1 つ目の `sqlite3` が排他的なトランザクションを始め、20 秒間、データベースをロックしたままにします。4〜5 行目の 2 つ目の `sqlite3` は、その間に書き込もうとします。`wait` で 1 つ目の `sqlite3` の終了を待ってから、7〜8 行目でもう一度書き込みます。ロックが働いていれば、4〜5 行目は `database is locked` のエラーになり、7〜8 行目は成功します。結果を記録してください。
 
 2 分ほど待ってから、CloudShell で、S3 に書き出されたデータベースのファイルをダウンロードし、行の数を数えます。
 
@@ -1232,8 +1235,8 @@ python3 -c "import sqlite3; print(sqlite3.connect('/tmp/sales.db').execute('SELE
 ```
 
 > **この手順で確かめること**
-> - **やること**: ロックの観察の 3 行目の結果と、EC2 インスタンスと CloudShell の `COUNT(*)` を比べます。
-> - **期待する結果**: ロックが働き、ロックの観察の 3 行目は `database is locked` のエラーになります（Amazon Linux 2023 の sqlite 3.40.0 では `Error: in prepare, database is locked (5)`）。EC2 インスタンスの `COUNT(*)` は、CSV の 93 行に 5 行目で書き込めた 1 行を足した 94 です。3 行目も書き込めた場合、つまりロックが働かなかった場合は 95 になります。CloudShell の値が EC2 インスタンスと同じかは、書き出しが終わったかによります。2026 年 11 月の検証では、CloudShell でも同じ 94 でした。EC2 インスタンスで書き込んだ直後に CloudShell で読むと、古い値になる見込みです。
+> - **やること**: ロックの観察の 4〜5 行目の結果と、EC2 インスタンスと CloudShell の `COUNT(*)` を比べます。
+> - **期待する結果**: ロックが働き、ロックの観察の 4〜5 行目は `database is locked` のエラーになります（Amazon Linux 2023 の sqlite 3.40.0 では `Error: in prepare, database is locked (5)`）。EC2 インスタンスの `COUNT(*)` は、CSV の 93 行に 7〜8 行目で書き込めた 1 行を足した 94 です。4〜5 行目も書き込めた場合、つまりロックが働かなかった場合は 95 になります。CloudShell の値が EC2 インスタンスと同じかは、書き出しが終わったかによります。2026 年 11 月の検証では、CloudShell でも同じ 94 でした。EC2 インスタンスで書き込んだ直後に CloudShell で読むと、古い値になる見込みです。
 > - **ここから分かること**: データベースのファイルも、1 つのファイルとして書き出されます。S3 の API で読む側は、書き出しが終わるまで古い内容を読みます。筆者は、データベースのファイルを S3 の API で読むなら、書き込みが止まってから読む必要があると考えています。
 
 ## ９．後片付け
